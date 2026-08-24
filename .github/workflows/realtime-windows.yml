@@ -1,0 +1,150 @@
+name: Build engine-sim real-time telemetry
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - realtime-telemetry
+
+permissions:
+  contents: read
+
+env:
+  BASE_COMMIT: 85f7c3b959a908ed5232ede4f1a4ac7eafe6b630
+  BUILD_TYPE: Release
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout telemetry overlay
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned engine-sim source and submodules
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'engine-sim-source'
+          git init $source
+          git -C $source remote add origin https://github.com/ange-yaghi/engine-sim.git
+          git -C $source fetch --depth 1 origin $env:BASE_COMMIT
+          git -C $source checkout --detach FETCH_HEAD
+          git -C $source submodule update --init --recursive --depth 1
+          if ((git -C $source rev-parse HEAD) -ne $env:BASE_COMMIT) {
+            throw 'The checked-out base commit does not match BASE_COMMIT.'
+          }
+          "SOURCE_DIR=$source" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BUILD_DIR=$(Join-Path $env:RUNNER_TEMP 'engine-sim-build')" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Apply telemetry overlay
+        shell: pwsh
+        run: |
+          $files = @(
+            'CMakeLists.txt',
+            'include/combustion_chamber.h',
+            'include/engine_sim_application.h',
+            'include/telemetry_server.h',
+            'src/combustion_chamber.cpp',
+            'src/engine_sim_application.cpp',
+            'src/telemetry_server.cpp',
+            'test/telemetry_server_smoke_test.cpp'
+          )
+          foreach ($relative in $files) {
+            $destination = Join-Path $env:SOURCE_DIR $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $relative) -Destination $destination -Force
+          }
+
+      - name: Install cloud build dependencies
+        shell: pwsh
+        run: |
+          choco install winflexbison3 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'winflexbison3 installation failed.' }
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          & $vcpkg install `
+            sdl2:x64-windows `
+            sdl2-image:x64-windows `
+            boost-filesystem:x64-windows
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg dependency installation failed.' }
+          $flex = (Get-Command win_flex.exe).Source
+          $bison = (Get-Command win_bison.exe).Source
+          "FLEX_EXECUTABLE=$flex" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BISON_EXECUTABLE=$bison" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure MSVC x64 build
+        shell: pwsh
+        run: |
+          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT 'scripts/buildsystems/vcpkg.cmake'
+          cmake -S $env:SOURCE_DIR -B $env:BUILD_DIR -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DFLEX_EXECUTABLE="$env:FLEX_EXECUTABLE" `
+            -DBISON_EXECUTABLE="$env:BISON_EXECUTABLE" `
+            -DDISCORD_ENABLED=OFF `
+            -DDTV=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
+
+      - name: Build application and native smoke test
+        shell: pwsh
+        run: |
+          cmake --build $env:BUILD_DIR --config $env:BUILD_TYPE `
+            --target engine-sim-app telemetry-server-smoke-test --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC build failed.' }
+
+      - name: Test native telemetry endpoints
+        shell: pwsh
+        run: |
+          ctest --test-dir $env:BUILD_DIR -C $env:BUILD_TYPE `
+            -R '^telemetry-server-smoke$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Telemetry smoke test failed.' }
+
+      - name: Validate standalone dashboard
+        shell: pwsh
+        run: node tools/validate_dashboard.js tools/technical-dashboard/index.html
+
+      - name: Assemble portable runtime
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'dist/engine-sim-telemetry'
+          $bin = Join-Path $stage 'bin'
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+
+          $application = Get-ChildItem -LiteralPath $env:BUILD_DIR -Recurse -File -Filter 'engine-sim-app.exe' |
+            Where-Object FullName -Match '[\\/]Release[\\/]' |
+            Select-Object -First 1
+          if ($null -eq $application) { throw 'Release executable was not produced.' }
+          Copy-Item -LiteralPath $application.FullName -Destination $bin
+
+          $runtime = Join-Path $env:SOURCE_DIR 'dependencies/submodules/delta-studio/dependencies/runtime/x64'
+          $runtimeDlls = @(
+            'd3dcompiler_47.dll', 'SDL2.dll', 'SDL2_image.dll',
+            'jpeg62.dll', 'libjpeg-9.dll', 'libpng16-16.dll',
+            'libtiff-5.dll', 'libwebp-7.dll', 'zlib1.dll'
+          )
+          foreach ($dll in $runtimeDlls) {
+            $path = Join-Path $runtime $dll
+            if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $bin }
+          }
+          if (Test-Path -LiteralPath $env:VCToolsRedistDir) {
+            Get-ChildItem -Path (Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC143.CRT/*.dll') -ErrorAction SilentlyContinue |
+              Copy-Item -Destination $bin
+          }
+
+          [IO.File]::WriteAllLines((Join-Path $bin 'delta.conf'), @('../delta', '../assets'))
+          Copy-Item -LiteralPath (Join-Path $env:SOURCE_DIR 'assets') -Destination (Join-Path $stage 'assets') -Recurse
+          Copy-Item -LiteralPath (Join-Path $env:SOURCE_DIR 'es') -Destination (Join-Path $stage 'es') -Recurse
+          Copy-Item -LiteralPath (Join-Path $env:SOURCE_DIR 'dependencies/submodules/delta-studio/engines/basic') -Destination (Join-Path $stage 'delta') -Recurse
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'tools') -Destination (Join-Path $stage 'tools') -Recurse
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'Open Technical Dashboard.cmd') -Destination $stage
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'README.md') -Destination (Join-Path $stage 'TELEMETRY_README.md')
+          Copy-Item -LiteralPath (Join-Path $env:SOURCE_DIR 'LICENSE') -Destination $stage
+
+      - name: Upload downloadable Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-sim-telemetry-windows-x64
+          path: dist/engine-sim-telemetry
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
