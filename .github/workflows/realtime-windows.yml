@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  BASE_COMMIT: 85f7c3b959a908ed5232ede4f1a4ac7eafe6b630
+  BASE_COMMIT: 80a9075bf34f53cd03a59c01883bcb5ec91740f5
   BUILD_TYPE: Release
 
 jobs:
@@ -41,20 +41,22 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            'CMakeLists.txt',
-            'include/combustion_chamber.h',
-            'include/engine_sim_application.h',
             'include/telemetry_server.h',
-            'src/combustion_chamber.cpp',
-            'src/engine_sim_application.cpp',
             'src/telemetry_server.cpp',
-            'test/telemetry_server_smoke_test.cpp'
+            'test/telemetry_server_smoke_test.cpp',
+            'test/script_compiler_smoke_test.cpp'
           )
           foreach ($relative in $files) {
             $destination = Join-Path $env:SOURCE_DIR $relative
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
             Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $relative) -Destination $destination -Force
           }
+
+          $telemetryPatch = Join-Path $env:GITHUB_WORKSPACE 'patches/stable-telemetry.patch'
+          git -C $env:SOURCE_DIR apply --check $telemetryPatch
+          if ($LASTEXITCODE -ne 0) { throw 'Stable telemetry patch validation failed.' }
+          git -C $env:SOURCE_DIR apply $telemetryPatch
+          if ($LASTEXITCODE -ne 0) { throw 'Stable telemetry patch failed.' }
 
           # The pinned engine-sim source predates Boost.Filesystem's
           # is_complete() -> is_absolute() API rename.
@@ -114,19 +116,23 @@ jobs:
             -DDTV=OFF
           if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
 
-      - name: Build application and native smoke test
+      - name: Build application and smoke tests
         shell: pwsh
         run: |
           cmake --build $env:BUILD_DIR --config $env:BUILD_TYPE `
-            --target engine-sim-app telemetry-server-smoke-test --parallel 2
+            --target engine-sim-app telemetry-server-smoke-test script-compiler-smoke-test --parallel 2
           if ($LASTEXITCODE -ne 0) { throw 'MSVC build failed.' }
 
-      - name: Test native telemetry endpoints
+      - name: Test telemetry endpoints and engine scripts
         shell: pwsh
         run: |
           ctest --test-dir $env:BUILD_DIR -C $env:BUILD_TYPE `
-            -R '^telemetry-server-smoke$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'Telemetry smoke test failed.' }
+            -R '^(telemetry-server-smoke|script-compiler-smoke)$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) {
+            $scriptLog = Join-Path $env:SOURCE_DIR 'error_log.log'
+            if (Test-Path -LiteralPath $scriptLog) { Get-Content -LiteralPath $scriptLog }
+            throw 'Telemetry or engine-script smoke test failed.'
+          }
 
       - name: Validate standalone dashboard
         shell: pwsh
