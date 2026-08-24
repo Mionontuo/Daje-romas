@@ -68,6 +68,23 @@ jobs:
             $sourceText.Replace('m_path->is_complete()', 'm_path->is_absolute()')
           )
 
+          # delta-studio links both release and debug D3DX libraries by
+          # default. Release executables must not depend on SDK-only *d DLLs.
+          $deltaCmake = Join-Path $env:SOURCE_DIR 'dependencies/submodules/delta-studio/CMakeLists.txt'
+          $deltaText = [IO.File]::ReadAllText($deltaCmake)
+          foreach ($debugLibrary in @(
+            '${D3DX_LIBS}/d3dx9d.lib',
+            '${D3DX_LIBS}/d3dx10d.lib',
+            '${D3DX_LIBS}/d3dx11d.lib'
+          )) {
+            if (-not $deltaText.Contains($debugLibrary)) {
+              throw "Expected legacy debug D3DX library was not found: $debugLibrary"
+            }
+            $deltaText = $deltaText.Replace("    $debugLibrary`r`n", '')
+            $deltaText = $deltaText.Replace("    $debugLibrary`n", '')
+          }
+          [IO.File]::WriteAllText($deltaCmake, $deltaText)
+
       - name: Install cloud build dependencies
         shell: pwsh
         run: |
@@ -138,6 +155,13 @@ jobs:
             $path = Join-Path $runtime $dll
             if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $bin }
           }
+
+          $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed/x64-windows/bin'
+          $boostRuntime = Get-ChildItem -LiteralPath $vcpkgBin -File -Filter 'boost_filesystem*.dll' |
+            Select-Object -First 1
+          if ($null -eq $boostRuntime) { throw 'Boost.Filesystem runtime DLL was not found.' }
+          Copy-Item -LiteralPath $boostRuntime.FullName -Destination $bin
+
           if ($env:VCToolsRedistDir -and (Test-Path -LiteralPath $env:VCToolsRedistDir)) {
             Get-ChildItem -Path (Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC143.CRT/*.dll') -ErrorAction SilentlyContinue |
               Copy-Item -Destination $bin
