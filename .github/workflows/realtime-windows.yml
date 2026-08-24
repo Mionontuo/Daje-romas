@@ -138,7 +138,7 @@ jobs:
             $path = Join-Path $runtime $dll
             if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $bin }
           }
-          if (Test-Path -LiteralPath $env:VCToolsRedistDir) {
+          if ($env:VCToolsRedistDir -and (Test-Path -LiteralPath $env:VCToolsRedistDir)) {
             Get-ChildItem -Path (Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC143.CRT/*.dll') -ErrorAction SilentlyContinue |
               Copy-Item -Destination $bin
           }
