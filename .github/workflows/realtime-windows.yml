@@ -56,6 +56,18 @@ jobs:
             Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $relative) -Destination $destination -Force
           }
 
+          # The pinned engine-sim source predates Boost.Filesystem's
+          # is_complete() -> is_absolute() API rename.
+          $piranhaPath = Join-Path $env:SOURCE_DIR 'dependencies/submodules/piranha/src/path.cpp'
+          $sourceText = [IO.File]::ReadAllText($piranhaPath)
+          if (-not $sourceText.Contains('m_path->is_complete()')) {
+            throw 'Expected legacy Boost.Filesystem call was not found.'
+          }
+          [IO.File]::WriteAllText(
+            $piranhaPath,
+            $sourceText.Replace('m_path->is_complete()', 'm_path->is_absolute()')
+          )
+
       - name: Install cloud build dependencies
         shell: pwsh
         run: |
