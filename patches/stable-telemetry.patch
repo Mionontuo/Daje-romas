@@ -1,0 +1,280 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index faa5a0b..08bea72 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -205,6 +205,7 @@ add_executable(engine-sim-app WIN32
+     # Source files
+     src/main.cpp
+     src/engine_sim_application.cpp
++    src/telemetry_server.cpp
+     src/geometry_generator.cpp
+     src/simulation_object.cpp
+     src/piston_object.cpp
+@@ -240,6 +241,7 @@ add_executable(engine-sim-app WIN32
+     include/delta.h
+     include/dtv.h
+     include/engine_sim_application.h
++    include/telemetry_server.h
+     include/geometry_generator.h
+     include/simulation_object.h
+     include/piston_object.h
+@@ -274,6 +276,7 @@ add_executable(engine-sim-app WIN32
+ 
+ target_link_libraries(engine-sim-app
+     engine-sim
++    ws2_32
+ )
+ 
+ if (DTV)
+@@ -317,3 +320,35 @@ target_link_libraries(engine-sim-test
+ 
+ include(GoogleTest)
+ gtest_discover_tests(engine-sim-test)
++
++add_executable(telemetry-server-smoke-test
++    test/telemetry_server_smoke_test.cpp
++    src/telemetry_server.cpp
++    include/telemetry_server.h
++)
++
++target_link_libraries(telemetry-server-smoke-test
++    ws2_32
++)
++
++add_test(
++    NAME telemetry-server-smoke
++    COMMAND telemetry-server-smoke-test
++)
++
++add_executable(script-compiler-smoke-test
++    test/script_compiler_smoke_test.cpp
++)
++
++target_link_libraries(script-compiler-smoke-test
++    engine-sim-script-interpreter
++)
++
++add_test(
++    NAME script-compiler-smoke
++    COMMAND script-compiler-smoke-test ${CMAKE_SOURCE_DIR}/assets/main.mr
++)
++
++set_tests_properties(script-compiler-smoke PROPERTIES
++    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
++)
+diff --git a/include/combustion_chamber.h b/include/combustion_chamber.h
+index 51d577d..8367689 100644
+--- a/include/combustion_chamber.h
++++ b/include/combustion_chamber.h
+@@ -60,6 +60,9 @@ class CombustionChamber : public atg_scs::ForceGenerator {
+         double pistonSpeed() const;
+         double calculateMeanPistonSpeed() const;
+         double calculateFiringPressure() const;
++        static constexpr int getStateSampleCount() { return StateSamples; }
++        double getPressureSample(int index) const { return m_pressure[index]; }
++        double getVolumeSample(int index) const { return m_volume[index]; }
+ 
+         bool isLit() const { return m_lit; }
+         bool popLitLastFrame();
+@@ -109,6 +112,7 @@ class CombustionChamber : public atg_scs::ForceGenerator {
+         double m_crankcasePressure;
+ 
+         double *m_pressure;
++        double *m_volume;
+         double *m_pistonSpeed;
+         static constexpr int StateSamples = 256;
+ 
+diff --git a/include/engine_sim_application.h b/include/engine_sim_application.h
+index e5d019a..258ec7e 100644
+--- a/include/engine_sim_application.h
++++ b/include/engine_sim_application.h
+@@ -22,6 +22,7 @@
+ #include "info_cluster.h"
+ #include "application_settings.h"
+ #include "transmission.h"
++#include "telemetry_server.h"
+ 
+ #include "delta.h"
+ #include "dtv.h"
+@@ -94,6 +95,7 @@ class EngineSimApplication {
+         void renderScene();
+ 
+         void refreshUserInterface();
++        void publishTelemetry();
+ 
+     protected:
+         double m_speedSetting = 1.0;
+@@ -149,6 +151,7 @@ class EngineSimApplication {
+         SimulationObject::ViewParameters m_viewParameters;
+ 
+         bool m_paused;
++        TelemetryServer m_telemetryServer;
+ 
+     protected:
+         void startRecording();
+diff --git a/src/combustion_chamber.cpp b/src/combustion_chamber.cpp
+index d01d56c..c8fac11 100644
+--- a/src/combustion_chamber.cpp
++++ b/src/combustion_chamber.cpp
+@@ -18,6 +18,7 @@ CombustionChamber::CombustionChamber() {
+     m_engine = nullptr;
+     m_pistonSpeed = nullptr;
+     m_pressure = nullptr;
++    m_volume = nullptr;
+     m_lit = false;
+     m_litLastFrame = false;
+     m_peakTemperature = 0;
+@@ -42,6 +43,7 @@ CombustionChamber::CombustionChamber() {
+ CombustionChamber::~CombustionChamber() {
+     assert(m_pistonSpeed == nullptr);
+     assert(m_pressure == nullptr);
++    assert(m_volume == nullptr);
+ }
+ 
+ void CombustionChamber::initialize(const Parameters &params) {
+@@ -53,9 +55,11 @@ void CombustionChamber::initialize(const Parameters &params) {
+ 
+     m_pistonSpeed = new double[StateSamples];
+     m_pressure = new double[StateSamples];
++    m_volume = new double[StateSamples];
+     for (int i = 0; i < StateSamples; ++i) {
+         m_pistonSpeed[i] = 0;
+         m_pressure[i] = 0;
++        m_volume[i] = 0;
+     }
+ 
+     Intake *intake = m_head->getIntake(m_piston->getCylinderIndex());
+@@ -112,9 +116,11 @@ void CombustionChamber::initialize(const Parameters &params) {
+ void CombustionChamber::destroy() {
+     if (m_pistonSpeed != nullptr) delete[] m_pistonSpeed;
+     if (m_pressure != nullptr) delete[] m_pressure;
++    if (m_volume != nullptr) delete[] m_volume;
+ 
+     m_pistonSpeed = nullptr;
+     m_pressure = nullptr;
++    m_volume = nullptr;
+ }
+ 
+ double CombustionChamber::getVolume() const {
+@@ -399,6 +405,7 @@ void CombustionChamber::updateCycleStates() {
+ 
+     m_pistonSpeed[i] = std::abs(pistonSpeed());
+     m_pressure[i] = m_system.pressure();
++    m_volume[i] = getVolume();
+ }
+ 
+ void CombustionChamber::apply(atg_scs::SystemState *system) {
+diff --git a/src/engine_sim_application.cpp b/src/engine_sim_application.cpp
+index c964f46..f143700 100644
+--- a/src/engine_sim_application.cpp
++++ b/src/engine_sim_application.cpp
+@@ -19,6 +19,8 @@
+ #include <chrono>
+ #include <stdlib.h>
+ #include <sstream>
++#include <cmath>
++#include <utility>
+ 
+ #if ATG_ENGINE_SIM_DISCORD_ENABLED
+ #include "../discord/Discord.h"
+@@ -180,6 +182,8 @@ void EngineSimApplication::initialize() {
+     m_audioSource->SetPan(0.0f);
+     m_audioSource->SetVolume(1.0f);
+ 
++    m_telemetryServer.start(8765);
++
+ #ifdef ATG_ENGINE_SIM_DISCORD_ENABLED
+     // Create a global instance of discord-rpc
+     CDiscord::CreateInstance();
+@@ -390,6 +394,8 @@ void EngineSimApplication::run() {
+             process(m_engine.GetFrameLength());
+         }
+ 
++        publishTelemetry();
++
+         m_uiManager.update(m_engine.GetFrameLength());
+ 
+         renderScene();
+@@ -409,6 +415,7 @@ void EngineSimApplication::run() {
+ }
+ 
+ void EngineSimApplication::destroy() {
++    m_telemetryServer.stop();
+     m_shaderSet.Destroy();
+ 
+     m_engine.GetDevice()->DestroyGPUBuffer(m_geometryVertexBuffer);
+@@ -421,6 +428,74 @@ void EngineSimApplication::destroy() {
+     m_audioBuffer.destroy();
+ }
+ 
++void EngineSimApplication::publishTelemetry() {
++    TelemetryServer::Snapshot snapshot;
++    snapshot.timestampMs = static_cast<std::uint64_t>(
++        std::chrono::duration_cast<std::chrono::milliseconds>(
++            std::chrono::steady_clock::now().time_since_epoch()).count());
++    snapshot.paused = m_paused;
++
++    if (m_iceEngine == nullptr || m_simulator.getEngine() == nullptr) {
++        m_telemetryServer.publish(snapshot);
++        return;
++    }
++
++    snapshot.connected = true;
++    snapshot.engineName = m_iceEngine->getName();
++    snapshot.rpm = m_iceEngine->getRpm();
++    snapshot.crankAngleDegrees = units::convert(
++        m_iceEngine->getOutputCrankshaft()->getCycleAngle(), units::deg);
++    snapshot.throttle = m_iceEngine->getThrottle();
++    snapshot.torqueNm = units::convert(m_simulator.getFilteredDynoTorque(), units::Nm);
++    snapshot.powerKw = units::convert(m_simulator.getDynoPower(), units::kW);
++    snapshot.manifoldPressureBar = units::convert(m_iceEngine->getManifoldPressure(), units::bar);
++    snapshot.intakeAfr = m_iceEngine->getIntakeAfr();
++    snapshot.exhaustO2Percent = 100.0 * m_iceEngine->getExhaustO2();
++    snapshot.vehicleSpeedKph = (m_vehicle != nullptr)
++        ? units::convert(std::abs(m_vehicle->getSpeed()), units::km / units::hour)
++        : 0.0;
++    snapshot.gear = (m_transmission != nullptr) ? m_transmission->getGear() + 1 : 0;
++    snapshot.simulationFrequency = m_simulator.getSimulationFrequency();
++    snapshot.dynoEnabled = m_simulator.m_dyno.m_enabled;
++    snapshot.ignitionEnabled = m_iceEngine->getIgnitionModule()->m_enabled;
++
++    constexpr double ambientPressure = units::pressure(1.0, units::atm);
++    constexpr double ambientTemperature = units::celcius(25.0);
++    const double theoreticalAirPerRevolution = 0.5 *
++        (ambientPressure * m_iceEngine->getDisplacement()) /
++        (constants::R * ambientTemperature);
++    const double theoreticalAirPerSecond = theoreticalAirPerRevolution * snapshot.rpm / 60.0;
++    snapshot.volumetricEfficiencyPercent = (std::abs(theoreticalAirPerSecond) < 1E-3)
++        ? 0.0
++        : 100.0 * m_iceEngine->getIntakeFlowRate() / theoreticalAirPerSecond;
++
++    const int cylinderCount = m_iceEngine->getCylinderCount();
++    snapshot.chambers.reserve(cylinderCount);
++    for (int cylinderIndex = 0; cylinderIndex < cylinderCount; ++cylinderIndex) {
++        const CombustionChamber *chamber = m_iceEngine->getChamber(cylinderIndex);
++        TelemetryServer::ChamberSample chamberSample;
++        chamberSample.pressureBar = units::convert(chamber->m_system.pressure(), units::bar);
++        chamberSample.volumeCc = units::convert(chamber->getVolume(), units::cc);
++        chamberSample.temperatureC = chamber->m_system.temperature() - units::K0;
++        chamberSample.afr = chamber->lastEventAfr();
++        chamberSample.lit = chamber->isLit();
++
++        const int sampleCount = CombustionChamber::getStateSampleCount();
++        chamberSample.pressureTraceBar.reserve(sampleCount);
++        chamberSample.volumeTraceCc.reserve(sampleCount);
++        for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
++            chamberSample.pressureTraceBar.push_back(
++                units::convert(chamber->getPressureSample(sampleIndex), units::bar));
++            chamberSample.volumeTraceCc.push_back(
++                units::convert(chamber->getVolumeSample(sampleIndex), units::cc));
++        }
++
++        snapshot.chambers.push_back(std::move(chamberSample));
++    }
++
++    m_telemetryServer.publish(snapshot);
++}
++
+ void EngineSimApplication::loadEngine(
+     Engine *engine,
+     Vehicle *vehicle,
