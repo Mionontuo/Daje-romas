@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 #include <utility>
@@ -53,6 +54,33 @@ namespace {
         }
 
         return true;
+    }
+
+    bool jsonNumber(const std::string &body, const char *name, double &value) {
+        const std::string key = std::string("\"") + name + "\"";
+        std::size_t position = body.find(key);
+        if (position == std::string::npos) return false;
+        position = body.find(':', position + key.size());
+        if (position == std::string::npos) return false;
+        const char *start = body.c_str() + position + 1;
+        char *end = nullptr;
+        const double parsed = std::strtod(start, &end);
+        if (end == start || !std::isfinite(parsed)) return false;
+        value = parsed;
+        return true;
+    }
+
+    bool jsonBoolean(const std::string &body, const char *name, bool &value) {
+        const std::string key = std::string("\"") + name + "\"";
+        std::size_t position = body.find(key);
+        if (position == std::string::npos) return false;
+        position = body.find(':', position + key.size());
+        if (position == std::string::npos) return false;
+        const std::size_t first = body.find_first_not_of(" \t\r\n", position + 1);
+        if (first == std::string::npos) return false;
+        if (body.compare(first, 4, "true") == 0) { value = true; return true; }
+        if (body.compare(first, 5, "false") == 0) { value = false; return true; }
+        return false;
     }
 }
 
@@ -114,6 +142,11 @@ void TelemetryServer::publish(const Snapshot &snapshot) {
     m_snapshot = snapshot;
 }
 
+TelemetryServer::ControlState TelemetryServer::getControlState() const {
+    std::lock_guard<std::mutex> lock(m_controlMutex);
+    return m_control;
+}
+
 void TelemetryServer::serve() {
     const SOCKET listenSocket = static_cast<SOCKET>(m_listenSocket.load());
     while (m_running.load()) {
@@ -168,6 +201,20 @@ void TelemetryServer::serve() {
             }
             body = serializeTrace(snapshot, cylinder);
         }
+        else if (request.rfind("GET /control", 0) == 0) {
+            body = serializeControl(getControlState());
+        }
+        else if (request.rfind("POST /control", 0) == 0) {
+            const std::size_t separator = request.find("\r\n\r\n");
+            const std::string payload = separator == std::string::npos
+                ? std::string()
+                : request.substr(separator + 4);
+            if (!updateControlFromJson(payload)) {
+                status = "400 Bad Request";
+                body = "{\"error\":\"invalid_control\"}";
+            }
+            else body = serializeControl(getControlState());
+        }
         else if (request.rfind("GET /health", 0) == 0 || request.rfind("GET / ", 0) == 0) {
             body = "{\"status\":\"ok\",\"service\":\"engine-sim-telemetry\",\"version\":1}";
         }
@@ -181,7 +228,7 @@ void TelemetryServer::serve() {
                  << "Content-Type: " << contentType << "\r\n"
                  << "Content-Length: " << body.size() << "\r\n"
                  << "Access-Control-Allow-Origin: *\r\n"
-                 << "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+                 << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
                  << "Access-Control-Allow-Headers: Content-Type\r\n"
                  << "Cache-Control: no-store\r\n"
                  << "Connection: close\r\n\r\n"
@@ -218,6 +265,14 @@ std::string TelemetryServer::serializeTelemetry(const Snapshot &snapshot) const 
            << ",\"dyno_enabled\":" << (snapshot.dynoEnabled ? "true" : "false")
            << ",\"ignition_enabled\":" << (snapshot.ignitionEnabled ? "true" : "false")
            << ",\"paused\":" << (snapshot.paused ? "true" : "false")
+           << ",\"displacement_l\":"; writeNumber(stream, snapshot.displacementLitres);
+    stream << ",\"redline_rpm\":"; writeNumber(stream, snapshot.redlineRpm);
+    stream << ",\"brake_percent\":"; writeNumber(stream, snapshot.brakePercent);
+    stream << ",\"dyno_hold\":" << (snapshot.dynoHold ? "true" : "false");
+    stream << ",\"dyno_target_rpm\":"; writeNumber(stream, snapshot.dynoTargetRpm);
+    stream << ",\"rev_limiter_rpm\":"; writeNumber(stream, snapshot.revLimiterRpm);
+    stream << ",\"ignition_advance_offset_deg\":"; writeNumber(stream, snapshot.ignitionAdvanceOffsetDegrees);
+    stream << ",\"remote_control_enabled\":" << (snapshot.remoteControlEnabled ? "true" : "false")
            << ",\"cylinders\":[";
     for (std::size_t i = 0; i < snapshot.chambers.size(); ++i) {
         if (i != 0) stream << ',';
@@ -230,6 +285,42 @@ std::string TelemetryServer::serializeTelemetry(const Snapshot &snapshot) const 
     }
     stream << "]}";
     return stream.str();
+}
+
+std::string TelemetryServer::serializeControl(const ControlState &control) const {
+    std::ostringstream stream;
+    stream << std::setprecision(10)
+           << "{\"version\":1"
+           << ",\"enabled\":" << (control.enabled ? "true" : "false")
+           << ",\"throttle\":"; writeNumber(stream, control.throttle);
+    stream << ",\"brake_percent\":"; writeNumber(stream, control.brakePercent);
+    stream << ",\"dyno_hold\":" << (control.dynoHold ? "true" : "false")
+           << ",\"dyno_target_rpm\":"; writeNumber(stream, control.dynoTargetRpm);
+    stream << ",\"ignition_enabled\":" << (control.ignitionEnabled ? "true" : "false")
+           << ",\"paused\":" << (control.paused ? "true" : "false")
+           << ",\"rev_limiter_rpm\":"; writeNumber(stream, control.revLimiterRpm);
+    stream << ",\"ignition_advance_offset_deg\":"; writeNumber(stream, control.ignitionAdvanceOffsetDegrees);
+    stream << '}';
+    return stream.str();
+}
+
+bool TelemetryServer::updateControlFromJson(const std::string &body) {
+    if (body.empty()) return false;
+    std::lock_guard<std::mutex> lock(m_controlMutex);
+    bool changed = false;
+    bool booleanValue = false;
+    double numberValue = 0.0;
+
+    if (jsonBoolean(body, "enabled", booleanValue)) { m_control.enabled = booleanValue; changed = true; }
+    if (jsonNumber(body, "throttle", numberValue)) { m_control.throttle = std::max(0.0, std::min(1.0, numberValue)); changed = true; }
+    if (jsonNumber(body, "brake_percent", numberValue)) { m_control.brakePercent = std::max(0.0, std::min(100.0, numberValue)); changed = true; }
+    if (jsonBoolean(body, "dyno_hold", booleanValue)) { m_control.dynoHold = booleanValue; changed = true; }
+    if (jsonNumber(body, "dyno_target_rpm", numberValue)) { m_control.dynoTargetRpm = std::max(500.0, std::min(20000.0, numberValue)); changed = true; }
+    if (jsonBoolean(body, "ignition_enabled", booleanValue)) { m_control.ignitionEnabled = booleanValue; changed = true; }
+    if (jsonBoolean(body, "paused", booleanValue)) { m_control.paused = booleanValue; changed = true; }
+    if (jsonNumber(body, "rev_limiter_rpm", numberValue)) { m_control.revLimiterRpm = std::max(1000.0, std::min(20000.0, numberValue)); changed = true; }
+    if (jsonNumber(body, "ignition_advance_offset_deg", numberValue)) { m_control.ignitionAdvanceOffsetDegrees = std::max(-15.0, std::min(15.0, numberValue)); changed = true; }
+    return changed;
 }
 
 std::string TelemetryServer::serializeTrace(const Snapshot &snapshot, int cylinder) const {
