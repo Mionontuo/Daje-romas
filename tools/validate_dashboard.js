@@ -11,8 +11,14 @@ new Function(html.slice(start + "<script>".length, end));
 for (const invariant of [
   "127.0.0.1:8765/telemetry",
   "127.0.0.1:8765/trace?cylinder=",
+  "127.0.0.1:8765/control",
   'id="liveButton"',
-  'id="modeBadge"'
+  'id="modeBadge"',
+  'id="remoteBrake"',
+  'id="remoteLimiter"',
+  'id="customChart"',
+  'id="exportCsv"',
+  'id="exportPng"'
 ]) {
   if (!html.includes(invariant)) throw new Error(`Missing dashboard invariant: ${invariant}`);
 }
