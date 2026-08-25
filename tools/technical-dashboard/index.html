@@ -30,7 +30,7 @@
       color: var(--text);
       font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
     }
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     .shell { max-width: 1540px; margin: 0 auto; padding: 26px; }
     header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
     .eyebrow { color: var(--red); font-size: 11px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
@@ -96,6 +96,18 @@
     .live-controls { margin-top: 13px; padding: 11px; border: 1px solid rgba(189, 216, 105, .25); border-radius: 9px; background: rgba(189, 216, 105, .05); }
     .live-controls[hidden] { display: none; }
     .live-controls select { width: 100%; margin-top: 6px; border: 1px solid #39464f; border-radius: 7px; background: #0c1115; color: var(--text); padding: 7px; }
+    .live-controls .field { margin-top: 10px; margin-bottom: 0; }
+    .live-controls input[type="range"] { width: 100%; accent-color: var(--cyan); }
+    .control-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+    .control-row button { flex: 1; }
+    .control-toggle { display: flex; gap: 8px; align-items: center; color: #cbd4da; font-size: 12px; }
+    .control-toggle input { accent-color: var(--green); }
+    .chart-lab { grid-column: 1 / -1; padding: 13px 15px; }
+    .chart-toolbar { display: grid; grid-template-columns: repeat(5, minmax(110px, 1fr)); gap: 9px; align-items: end; }
+    .chart-toolbar label { color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
+    .chart-toolbar select { width: 100%; margin-top: 4px; border: 1px solid #39464f; border-radius: 7px; background: #0c1115; color: var(--text); padding: 7px; }
+    .chart-actions { display: flex; gap: 7px; }
+    .chart-actions button { flex: 1; }
     canvas { display: block; width: 100%; height: 300px; }
     .footer-note { color: var(--muted); font-size: 11px; margin: 16px 2px 2px; }
     .status { color: #cbd4da; }
@@ -104,6 +116,7 @@
       .controls { position: static; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 12px; }
       .controls .panel-title, .controls .panel-copy, .controls .divider, .controls .notice { grid-column: 1 / -1; }
       .kpis { grid-template-columns: repeat(3, 1fr); }
+      .chart-toolbar { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
     }
     @media (max-width: 720px) {
       .shell { padding: 15px; }
@@ -113,6 +126,7 @@
       .kpis { grid-template-columns: repeat(2, 1fr); }
       .chart-card { margin-bottom: 12px; }
       .badge { align-self: flex-start; }
+      .chart-toolbar { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -162,6 +176,16 @@
           <div class="source">Telemetria nativa attiva</div>
           <label for="liveCylinder">Cilindro visualizzato</label>
           <select id="liveCylinder"><option value="0">Cilindro 1</option></select>
+          <div class="divider"></div>
+          <label class="control-toggle"><input id="remoteEnabled" type="checkbox"> Abilita comandi remoti</label>
+          <div class="field"><label><span>Acceleratore</span><span id="remoteThrottleValue">0%</span></label><input id="remoteThrottle" type="range" min="0" max="100" step="1" value="0"></div>
+          <div class="field"><label><span>Freno dinamometrico</span><span id="remoteBrakeValue">0%</span></label><input id="remoteBrake" type="range" min="0" max="100" step="1" value="0"></div>
+          <label class="control-toggle"><input id="remoteDynoHold" type="checkbox"> Mantieni regime dyno</label>
+          <div class="field"><label><span>Regime dyno obiettivo</span><span id="remoteDynoValue">2500 rpm</span></label><input id="remoteDyno" type="range" min="500" max="12000" step="100" value="2500"></div>
+          <div class="field"><label><span>Limitatore</span><span id="remoteLimiterValue">6500 rpm</span></label><input id="remoteLimiter" type="range" min="1000" max="12000" step="100" value="6500"></div>
+          <div class="field"><label><span>Correzione anticipo</span><span id="remoteAdvanceValue">0°</span></label><input id="remoteAdvance" type="range" min="-15" max="15" step="0.5" value="0"></div>
+          <label class="control-toggle"><input id="remoteIgnition" type="checkbox"> Accensione attiva</label>
+          <label class="control-toggle"><input id="remotePaused" type="checkbox"> Simulazione in pausa</label>
           <div class="notice" id="liveDetails">localhost:8765 · aggiornamento 20 Hz</div>
         </div>
       </aside>
@@ -176,6 +200,24 @@
         </section>
 
         <section class="charts">
+          <article class="panel chart-lab" id="chartLab">
+            <div class="panel-title">Laboratorio grafici LIVE</div>
+            <div class="panel-copy">Scegli assi e grandezze; interpolazione lineare o media mobile. Esporta i campioni acquisiti in CSV e il grafico in PNG.</div>
+            <div class="chart-toolbar">
+              <label>Asse X<select id="chartX"><option value="time">Tempo [s]</option><option value="rpm">Regime [rpm]</option><option value="map">MAP [bar]</option><option value="throttle">Acceleratore [%]</option><option value="afr">AFR [-]</option></select></label>
+              <label>Serie principale<select id="chartY1"><option value="rpm">Regime [rpm]</option><option value="torque">Coppia [Nm]</option><option value="power">Potenza [kW]</option><option value="map">MAP [bar]</option><option value="afr">AFR [-]</option><option value="ve">Efficienza volumetrica [%]</option><option value="speed">Velocità [km/h]</option><option value="throttle">Acceleratore [%]</option><option value="cylinderPressure">Pressione cilindro [bar]</option><option value="bmep">BMEP [bar]</option></select></label>
+              <label>Confronto<select id="chartY2"><option value="none">Nessuno</option><option value="torque">Coppia [Nm]</option><option value="power" selected>Potenza [kW]</option><option value="rpm">Regime [rpm]</option><option value="map">MAP [bar]</option><option value="afr">AFR [-]</option><option value="ve">Efficienza volumetrica [%]</option><option value="throttle">Acceleratore [%]</option><option value="bmep">BMEP [bar]</option></select></label>
+              <label>Intervallo<select id="chartWindow"><option value="20">20 secondi</option><option value="60" selected>60 secondi</option><option value="120">120 secondi</option></select></label>
+              <label>Interpolazione<select id="chartSmooth"><option value="1">Lineare</option><option value="5">Media mobile · 5</option><option value="10">Media mobile · 10</option><option value="20">Media mobile · 20</option></select></label>
+            </div>
+            <div class="control-row chart-actions"><button class="small-button" id="exportCsv">Esporta CSV</button><button class="small-button" id="exportPng">Esporta PNG</button></div>
+          </article>
+
+          <article class="chart-card wide">
+            <div class="chart-head"><div><div class="chart-title" id="customTitle">Grafico configurabile</div><div class="chart-copy" id="customCopy">Connetti la telemetria LIVE per acquisire i campioni.</div></div><span class="kind live">LIVE</span></div>
+            <canvas id="customChart"></canvas>
+          </article>
+
           <article class="chart-card wide">
             <div class="chart-head"><div><div class="chart-title" id="pressureTitle">Pressione cilindro · ciclo 720°</div><div class="chart-copy" id="pressureCopy">Compressione, combustione, espansione e ricambio gas.</div></div><span class="kind estimate" id="pressureKind">STIMA</span></div>
             <canvas id="pressureChart"></canvas>
@@ -214,9 +256,17 @@
     const COLORS = { red: "#ef4545", cyan: "#77cee0", green: "#bdd869", orange: "#f4802a", yellow: "#fdbd2e", pink: "#f394be" };
     const controls = ["bore", "stroke", "rod", "chamber", "cylinders", "rpm", "spark", "burn", "peak", "map"];
     const DEFAULTS = { bore: 86, stroke: 86, rod: 140, chamber: 50, cylinders: 4, rpm: 7500 };
+    const METRICS = {
+      time: { label: "tempo", unit: "s" }, rpm: { label: "regime", unit: "rpm" },
+      torque: { label: "coppia", unit: "Nm" }, power: { label: "potenza", unit: "kW" },
+      map: { label: "pressione collettore", unit: "bar" }, afr: { label: "AFR", unit: "-" },
+      ve: { label: "efficienza volumetrica", unit: "%" }, speed: { label: "velocità", unit: "km/h" },
+      throttle: { label: "acceleratore", unit: "%" }, cylinderPressure: { label: "pressione cilindro", unit: "bar" },
+      bmep: { label: "BMEP", unit: "bar" }
+    };
     const state = {
       timing: [], intake: [], exhaust: [], filename: "", source: {}, isRotary: false,
-      live: { enabled: false, polling: false, tracing: false, telemetry: null, trace: null, startMs: 0, timer: null, traceTimer: null, history: { rpm: [], torque: [], power: [] } }
+      live: { enabled: false, polling: false, tracing: false, telemetry: null, trace: null, startMs: 0, timer: null, traceTimer: null, controlTimer: null, controlsInitialized: false, samples: [], history: { rpm: [], torque: [], power: [] } }
     };
     const unitFactors = {
       length: { "units.mm": 1, "units.cm": 10, "units.inch": 25.4, "units.thou": 0.0254, "units.m": 1000 },
@@ -532,7 +582,7 @@
       setKind("flowKind", "ESTRATTO", "extracted");
     }
 
-    function appendHistory(series, point, windowSeconds = 20) {
+    function appendHistory(series, point, windowSeconds = 120) {
       series.push(point);
       const cutoff = point.x - windowSeconds;
       while (series.length && series[0].x < cutoff) series.shift();
@@ -565,7 +615,22 @@
         appendHistory(state.live.history.rpm, { x: seconds, y: Number(telemetry.rpm) || 0 });
         appendHistory(state.live.history.torque, { x: seconds, y: Number(telemetry.torque_nm) || 0 });
         appendHistory(state.live.history.power, { x: seconds, y: Number(telemetry.power_kw) || 0 });
+        const selectedCylinder = clamp(Number($("liveCylinder").value) || 0, 0, Math.max(0, (telemetry.cylinders || []).length - 1));
+        const cylinder = (telemetry.cylinders || [])[selectedCylinder] || {};
+        const displacementLitres = Number(telemetry.displacement_l) || 0;
+        const torque = Number(telemetry.torque_nm) || 0;
+        const bmep = displacementLitres > 0 ? 4 * Math.PI * torque / (displacementLitres / 1000) / 100000 : 0;
+        state.live.samples.push({
+          time: seconds, timestamp_ms: telemetry.timestamp_ms, rpm: Number(telemetry.rpm) || 0,
+          torque, power: Number(telemetry.power_kw) || 0, map: Number(telemetry.manifold_pressure_bar) || 0,
+          afr: Number(telemetry.intake_afr) || 0, ve: Number(telemetry.volumetric_efficiency_percent) || 0,
+          speed: Number(telemetry.vehicle_speed_kph) || 0, throttle: 100 * (Number(telemetry.throttle) || 0),
+          cylinderPressure: Number(cylinder.pressure_bar) || 0, bmep, gear: Number(telemetry.gear) || 0
+        });
+        const cutoff = seconds - 120;
+        while (state.live.samples.length && state.live.samples[0].time < cutoff) state.live.samples.shift();
         updateCylinderSelector((telemetry.cylinders || []).length);
+        initializeRemoteControls(telemetry);
         $("liveButton").textContent = "LIVE connesso";
         $("liveButton").classList.add("active");
         $("modeBadge").textContent = "localhost · telemetria nativa";
@@ -602,6 +667,8 @@
       state.live.telemetry = null;
       state.live.trace = null;
       state.live.startMs = 0;
+      state.live.controlsInitialized = false;
+      state.live.samples = [];
       state.live.history = { rpm: [], torque: [], power: [] };
       $("liveControls").hidden = false;
       $("liveButton").textContent = "In attesa LIVE";
@@ -612,6 +679,7 @@
 
     function stopLive() {
       clearInterval(state.live.timer); clearInterval(state.live.traceTimer);
+      clearTimeout(state.live.controlTimer);
       state.live.enabled = false;
       state.live.timer = null; state.live.traceTimer = null;
       $("liveControls").hidden = true;
@@ -655,21 +723,138 @@
       $("pressureCopy").textContent = "Cilindro " + (selectedIndex + 1) + " · picco " + fmt(peakPressure, 1) + " bar · istantanea " + fmt(cylinder.pressure_bar, 1) + " bar.";
       $("pvTitle").textContent = "Diagramma P‑V nativo";
       $("pvCopy").textContent = "Pressione e volume campionati internamente su 256 intervalli.";
-      $("pistonTitle").textContent = "Regime · ultimi 20 secondi";
+      const historyWindow = Number($("chartWindow").value) || 60;
+      const historyCutoff = state.live.samples.length ? state.live.samples[state.live.samples.length - 1].time - historyWindow : 0;
+      const recent = series => series.filter(point => point.x >= historyCutoff);
+      $("pistonTitle").textContent = "Regime · ultimi " + historyWindow + " secondi";
       $("pistonCopy").textContent = "Aggiornamento metriche a 20 Hz.";
-      $("timingTitle").textContent = "Coppia dyno · ultimi 20 secondi";
+      $("timingTitle").textContent = "Coppia dyno · ultimi " + historyWindow + " secondi";
       $("timingCopy").textContent = telemetry.dyno_enabled ? "Dinamometro attivo." : "Il valore è significativo quando il dinamometro è attivo.";
-      $("flowTitle").textContent = "Potenza dyno · ultimi 20 secondi";
+      $("flowTitle").textContent = "Potenza dyno · ultimi " + historyWindow + " secondi";
       $("flowCopy").textContent = "MAP " + fmt(telemetry.manifold_pressure_bar, 2) + " bar · AFR " + fmt(telemetry.intake_afr, 2) + ".";
       for (const id of ["pressureKind", "pvKind", "pistonKind", "timingKind", "flowKind"]) setKind(id, "LIVE", "live");
 
       drawChart($("pressureChart"), { xLabel: "angolo ciclo [°]", yLabel: "pressione [bar]", xMin: 0, xMax: 720, series: pressureTrace.length ? [{ name: "cilindro " + (selectedIndex + 1), color: COLORS.red, data: pressureTrace }] : [] });
       drawChart($("pvChart"), { xLabel: "volume [cm³]", yLabel: "pressione [bar]", series: pvTrace.length ? [{ name: "P‑V nativo", color: COLORS.orange, data: pvTrace }] : [] });
-      drawChart($("pistonChart"), { xLabel: "tempo [s]", yLabel: "regime [rpm]", series: [{ name: "rpm", color: COLORS.cyan, data: state.live.history.rpm }] });
-      drawChart($("timingChart"), { xLabel: "tempo [s]", yLabel: "coppia [Nm]", series: [{ name: "coppia", color: COLORS.yellow, data: state.live.history.torque }] });
-      drawChart($("flowChart"), { xLabel: "tempo [s]", yLabel: "potenza [kW]", series: [{ name: "potenza", color: COLORS.green, data: state.live.history.power }] });
+      drawChart($("pistonChart"), { xLabel: "tempo [s]", yLabel: "regime [rpm]", series: [{ name: "rpm", color: COLORS.cyan, data: recent(state.live.history.rpm) }] });
+      drawChart($("timingChart"), { xLabel: "tempo [s]", yLabel: "coppia [Nm]", series: [{ name: "coppia", color: COLORS.yellow, data: recent(state.live.history.torque) }] });
+      drawChart($("flowChart"), { xLabel: "tempo [s]", yLabel: "potenza [kW]", series: [{ name: "potenza", color: COLORS.green, data: recent(state.live.history.power) }] });
+      renderCustomChart();
       $("liveDetails").textContent = "localhost:8765 · " + telemetry.simulation_frequency + " Hz simulazione · VE " + fmt(telemetry.volumetric_efficiency_percent, 1) + "%";
       $("parseStatus").textContent = "LIVE: " + telemetry.engine_name + " · marcia " + telemetry.gear + " · velocità " + fmt(telemetry.vehicle_speed_kph, 1) + " km/h · O₂ scarico " + fmt(telemetry.exhaust_o2_percent, 2) + "%";
+    }
+
+    function initializeRemoteControls(telemetry) {
+      if (state.live.controlsInitialized) return;
+      state.live.controlsInitialized = true;
+      $("remoteEnabled").checked = Boolean(telemetry.remote_control_enabled);
+      $("remoteThrottle").value = Math.round(100 * (Number(telemetry.throttle) || 0));
+      $("remoteBrake").value = Number(telemetry.brake_percent) || 0;
+      $("remoteDynoHold").checked = Boolean(telemetry.dyno_hold);
+      $("remoteDyno").max = Math.max(12000, Math.ceil((Number(telemetry.redline_rpm) || 6500) / 500) * 500);
+      $("remoteLimiter").max = $("remoteDyno").max;
+      $("remoteDyno").value = Number(telemetry.dyno_target_rpm) || 2500;
+      $("remoteLimiter").value = Number(telemetry.rev_limiter_rpm) || Number(telemetry.redline_rpm) || 6500;
+      $("remoteAdvance").value = Number(telemetry.ignition_advance_offset_deg) || 0;
+      $("remoteIgnition").checked = Boolean(telemetry.ignition_enabled);
+      $("remotePaused").checked = Boolean(telemetry.paused);
+      updateRemoteLabels();
+    }
+
+    function updateRemoteLabels() {
+      $("remoteThrottleValue").textContent = $("remoteThrottle").value + "%";
+      $("remoteBrakeValue").textContent = $("remoteBrake").value + "%";
+      $("remoteDynoValue").textContent = $("remoteDyno").value + " rpm";
+      $("remoteLimiterValue").textContent = $("remoteLimiter").value + " rpm";
+      $("remoteAdvanceValue").textContent = Number($("remoteAdvance").value).toFixed(1).replace(".0", "") + "°";
+    }
+
+    function queueRemoteControl() {
+      updateRemoteLabels();
+      clearTimeout(state.live.controlTimer);
+      state.live.controlTimer = setTimeout(sendRemoteControl, 100);
+    }
+
+    async function sendRemoteControl() {
+      const payload = {
+        enabled: $("remoteEnabled").checked,
+        throttle: Number($("remoteThrottle").value) / 100,
+        brake_percent: Number($("remoteBrake").value),
+        dyno_hold: $("remoteDynoHold").checked,
+        dyno_target_rpm: Number($("remoteDyno").value),
+        rev_limiter_rpm: Number($("remoteLimiter").value),
+        ignition_advance_offset_deg: Number($("remoteAdvance").value),
+        ignition_enabled: $("remoteIgnition").checked,
+        paused: $("remotePaused").checked
+      };
+      try {
+        const response = await fetch("http://127.0.0.1:8765/control", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw Error("HTTP " + response.status);
+        const control = await response.json();
+        $("liveDetails").textContent = control.enabled
+          ? "Comandi remoti attivi · limiti di sicurezza applicati"
+          : "Comandi remoti disattivati · tastiera del simulatore attiva";
+      } catch (error) {
+        $("parseStatus").textContent = "Comando non applicato: " + error.message;
+      }
+    }
+
+    function currentSamples() {
+      const seconds = Number($("chartWindow").value) || 60;
+      const samples = state.live.samples;
+      if (!samples.length) return [];
+      const cutoff = samples[samples.length - 1].time - seconds;
+      return samples.filter(sample => sample.time >= cutoff);
+    }
+
+    function movingAverage(points, windowSize) {
+      if (windowSize <= 1) return points;
+      return points.map((point, index) => {
+        const start = Math.max(0, index - windowSize + 1);
+        const slice = points.slice(start, index + 1);
+        return { x: point.x, y: slice.reduce((sum, item) => sum + item.y, 0) / slice.length };
+      });
+    }
+
+    function renderCustomChart() {
+      const xKey = $("chartX").value, y1Key = $("chartY1").value, y2Key = $("chartY2").value;
+      const samples = currentSamples();
+      const smoothing = Number($("chartSmooth").value) || 1;
+      const xMeta = METRICS[xKey], y1Meta = METRICS[y1Key];
+      const makeSeries = key => movingAverage(samples.map(sample => ({ x: sample[xKey], y: sample[key] })).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y)), smoothing);
+      const series = [{ name: y1Meta.label, color: COLORS.cyan, data: makeSeries(y1Key) }];
+      let y2Meta = null;
+      if (y2Key !== "none" && y2Key !== y1Key) {
+        y2Meta = METRICS[y2Key];
+        series.push({ name: y2Meta.label, color: COLORS.orange, data: makeSeries(y2Key), axis: "right" });
+      }
+      $("customTitle").textContent = y1Meta.label + (y2Meta ? " e " + y2Meta.label : "") + " per " + xMeta.label;
+      $("customCopy").textContent = samples.length + " campioni · " + (smoothing > 1 ? "media mobile su " + smoothing + " campioni" : "interpolazione lineare") + ".";
+      drawChart($("customChart"), {
+        xLabel: xMeta.label + " [" + xMeta.unit + "]",
+        yLabel: y1Meta.label + " [" + y1Meta.unit + "]",
+        y2Label: y2Meta ? y2Meta.label + " [" + y2Meta.unit + "]" : "",
+        series
+      });
+    }
+
+    function downloadBlob(blob, filename) {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob); link.download = filename; link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    }
+
+    function exportCsv() {
+      const columns = ["timestamp_ms", "time", "rpm", "torque", "power", "map", "afr", "ve", "speed", "throttle", "cylinderPressure", "bmep", "gear"];
+      const units = ["ms", "s", "rpm", "Nm", "kW", "bar", "ratio", "%", "km/h", "%", "bar", "bar", "index"];
+      const rows = [columns.join(","), units.join(","), ...state.live.samples.map(sample => columns.map(column => sample[column]).join(","))];
+      downloadBlob(new Blob([rows.join("\r\n")], { type: "text/csv;charset=utf-8" }), "engine-sim-telemetry.csv");
+    }
+
+    function exportPng() {
+      $("customChart").toBlob(blob => { if (blob) downloadBlob(blob, "engine-sim-chart.png"); }, "image/png");
     }
 
     function niceRange(min, max) {
@@ -683,17 +868,23 @@
       const width = Math.max(320, canvas.clientWidth || 600), height = 300;
       canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
       const ctx = canvas.getContext("2d"); ctx.setTransform(ratio, 0, 0, ratio, 0, 0); ctx.clearRect(0, 0, width, height);
-      const margin = { l: 57, r: 18, t: 26, b: 43 }, plotW = width - margin.l - margin.r, plotH = height - margin.t - margin.b;
+      const hasRightAxis = (config.series || []).some(series => series.axis === "right");
+      const margin = { l: 57, r: hasRightAxis ? 62 : 18, t: 26, b: 43 }, plotW = width - margin.l - margin.r, plotH = height - margin.t - margin.b;
       const all = (config.series || []).flatMap(s => s.data || []);
       if (!all.length) {
         ctx.fillStyle = "#72808b"; ctx.font = "13px Segoe UI"; ctx.textAlign = "center";
         ctx.fillText("Dati non disponibili per questo preset", width / 2, height / 2); return;
       }
       let [xMin, xMax] = niceRange(config.xMin ?? Math.min(...all.map(p => p.x)), config.xMax ?? Math.max(...all.map(p => p.x)));
-      let [yMin, yMax] = niceRange(config.yMin ?? Math.min(0, ...all.map(p => p.y)), config.yMax ?? Math.max(...all.map(p => p.y)));
+      const leftPoints = (config.series || []).filter(series => series.axis !== "right").flatMap(series => series.data || []);
+      const rightPoints = (config.series || []).filter(series => series.axis === "right").flatMap(series => series.data || []);
+      let [yMin, yMax] = niceRange(config.yMin ?? Math.min(0, ...leftPoints.map(p => p.y)), config.yMax ?? Math.max(...leftPoints.map(p => p.y)));
+      let [y2Min, y2Max] = rightPoints.length ? niceRange(Math.min(0, ...rightPoints.map(p => p.y)), Math.max(...rightPoints.map(p => p.y))) : [0, 1];
       if (config.yMin === undefined) { const pad = (yMax - yMin) * .08; yMax += pad; }
+      if (rightPoints.length) y2Max += (y2Max - y2Min) * .08;
       const sx = x => margin.l + (x - xMin) / (xMax - xMin) * plotW;
       const sy = y => margin.t + plotH - (y - yMin) / (yMax - yMin) * plotH;
+      const sy2 = y => margin.t + plotH - (y - y2Min) / (y2Max - y2Min) * plotH;
       ctx.lineWidth = 1; ctx.font = "10px Segoe UI";
       for (let i = 0; i <= 5; i++) {
         const tx = lerp(xMin, xMax, i / 5), ty = lerp(yMin, yMax, i / 5);
@@ -701,15 +892,23 @@
         ctx.beginPath(); ctx.moveTo(margin.l, sy(ty)); ctx.lineTo(margin.l + plotW, sy(ty)); ctx.stroke();
         ctx.fillStyle = "#83919c"; ctx.textAlign = "center"; ctx.fillText(axisFormat(tx), sx(tx), margin.t + plotH + 17);
         ctx.textAlign = "right"; ctx.fillText(axisFormat(ty), margin.l - 8, sy(ty) + 3);
+        if (rightPoints.length) {
+          const ty2 = lerp(y2Min, y2Max, i / 5);
+          ctx.textAlign = "left"; ctx.fillStyle = "#83919c"; ctx.fillText(axisFormat(ty2), margin.l + plotW + 8, sy2(ty2) + 3);
+        }
       }
       ctx.save(); ctx.beginPath(); ctx.rect(margin.l, margin.t, plotW, plotH); ctx.clip();
       for (const series of config.series) {
         ctx.strokeStyle = series.color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.beginPath();
-        series.data.forEach((p, i) => { if (i) ctx.lineTo(sx(p.x), sy(p.y)); else ctx.moveTo(sx(p.x), sy(p.y)); }); ctx.stroke();
+        const seriesY = series.axis === "right" ? sy2 : sy;
+        series.data.forEach((p, i) => { if (i) ctx.lineTo(sx(p.x), seriesY(p.y)); else ctx.moveTo(sx(p.x), seriesY(p.y)); }); ctx.stroke();
       }
       ctx.restore();
       ctx.fillStyle = "#9aa7b1"; ctx.textAlign = "center"; ctx.fillText(config.xLabel || "", margin.l + plotW / 2, height - 5);
       ctx.save(); ctx.translate(12, margin.t + plotH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(config.yLabel || "", 0, 0); ctx.restore();
+      if (rightPoints.length) {
+        ctx.save(); ctx.translate(width - 8, margin.t + plotH / 2); ctx.rotate(Math.PI / 2); ctx.fillText(config.y2Label || "", 0, 0); ctx.restore();
+      }
       let legendX = margin.l + 5;
       for (const series of config.series) {
         ctx.fillStyle = series.color; ctx.fillRect(legendX, 8, 13, 3); ctx.fillStyle = "#cbd4da"; ctx.textAlign = "left"; ctx.fillText(series.name, legendX + 18, 12);
@@ -736,6 +935,13 @@
     $("chooseFile").addEventListener("click", () => $("fileInput").click());
     $("liveButton").addEventListener("click", () => state.live.enabled ? stopLive() : startLive());
     $("liveCylinder").addEventListener("change", () => { state.live.trace = null; pollTrace(); renderLive(); });
+    for (const id of ["remoteEnabled", "remoteThrottle", "remoteBrake", "remoteDynoHold", "remoteDyno", "remoteLimiter", "remoteAdvance", "remoteIgnition", "remotePaused"]) {
+      $(id).addEventListener("input", queueRemoteControl);
+      $(id).addEventListener("change", queueRemoteControl);
+    }
+    for (const id of ["chartX", "chartY1", "chartY2", "chartWindow", "chartSmooth"]) $(id).addEventListener("change", () => { if (state.live.enabled) renderLive(); else renderCustomChart(); });
+    $("exportCsv").addEventListener("click", exportCsv);
+    $("exportPng").addEventListener("click", exportPng);
     $("fileInput").addEventListener("change", event => loadFile(event.target.files[0]));
     const dropzone = $("dropzone");
     for (const type of ["dragenter", "dragover"]) dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add("drag"); });
@@ -743,7 +949,7 @@
     dropzone.addEventListener("drop", event => loadFile(event.dataTransfer.files[0]));
     for (const id of controls) $(id).addEventListener("input", () => { if (["bore", "stroke", "rod", "chamber", "cylinders", "rpm"].includes(id)) state.source[id] = false; update(); });
     let resizeTimer; window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(update, 100); });
-    updateSourceLabels(); update();
+    updateSourceLabels(); update(); renderCustomChart();
     fetch("http://127.0.0.1:8765/health", { cache: "no-store" }).then(response => { if (response.ok) startLive(); }).catch(() => {});
   })();
   </script>
