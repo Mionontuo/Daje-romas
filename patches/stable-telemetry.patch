@@ -19,15 +19,15 @@ index faa5a0b..36e2841 100644
      include/simulation_object.h
      include/piston_object.h
 @@ -274,6 +276,7 @@ add_executable(engine-sim-app WIN32
-
+ 
  target_link_libraries(engine-sim-app
      engine-sim
 +    ws2_32
  )
-
+ 
  if (DTV)
 @@ -317,3 +320,36 @@ target_link_libraries(engine-sim-test
-
+ 
  include(GoogleTest)
  gtest_discover_tests(engine-sim-test)
 +
@@ -74,17 +74,17 @@ index 51d577d..8367689 100644
 +        static constexpr int getStateSampleCount() { return StateSamples; }
 +        double getPressureSample(int index) const { return m_pressure[index]; }
 +        double getVolumeSample(int index) const { return m_volume[index]; }
-
+ 
          bool isLit() const { return m_lit; }
          bool popLitLastFrame();
 @@ -109,6 +112,7 @@ class CombustionChamber : public atg_scs::ForceGenerator {
          double m_crankcasePressure;
-
+ 
          double *m_pressure;
 +        double *m_volume;
          double *m_pistonSpeed;
          static constexpr int StateSamples = 256;
-
+ 
 diff --git a/include/engine_sim_application.h b/include/engine_sim_application.h
 index e5d019a..60ffc68 100644
 --- a/include/engine_sim_application.h
@@ -94,26 +94,26 @@ index e5d019a..60ffc68 100644
  #include "application_settings.h"
  #include "transmission.h"
 +#include "telemetry_server.h"
-
+ 
  #include "delta.h"
  #include "dtv.h"
 @@ -94,6 +95,8 @@ class EngineSimApplication {
          void renderScene();
-
+ 
          void refreshUserInterface();
 +        void publishTelemetry();
 +        void applyRemoteControls();
-
+ 
      protected:
          double m_speedSetting = 1.0;
 @@ -149,6 +152,9 @@ class EngineSimApplication {
          SimulationObject::ViewParameters m_viewParameters;
-
+ 
          bool m_paused;
 +        TelemetryServer m_telemetryServer;
 +        bool m_remoteControlsPreviouslyEnabled = false;
 +        double m_remoteDefaultRevLimit = 0.0;
-
+ 
      protected:
          void startRecording();
 diff --git a/include/ignition_module.h b/include/ignition_module.h
@@ -122,22 +122,22 @@ index 7647262..d64bb29 100644
 +++ b/include/ignition_module.h
 @@ -38,6 +38,10 @@ class IgnitionModule : public Part {
          void resetIgnitionEvents();
-
+ 
          double getTimingAdvance();
 +        void setRevLimit(double revLimit) { m_revLimit = revLimit; }
 +        double getRevLimit() const { return m_revLimit; }
 +        void setTimingAdvanceOffset(double offset) { m_timingAdvanceOffset = offset; }
 +        double getTimingAdvanceOffset() const { return m_timingAdvanceOffset; }
-
+ 
          bool m_enabled;
-
+ 
 @@ -53,6 +57,7 @@ class IgnitionModule : public Part {
          double m_revLimit;
          double m_revLimitTimer;
          double m_limiterDuration;
 +        double m_timingAdvanceOffset;
  };
-
+ 
  #endif /* ATG_ENGINE_SIM_IGNITION_MODULE_H */
 diff --git a/scripting/src/compiler.cpp b/scripting/src/compiler.cpp
 index 1ec94d3..877254b 100644
@@ -146,12 +146,12 @@ index 1ec94d3..877254b 100644
 @@ -22,8 +22,8 @@ void es_script::Compiler::initialize() {
      m_compiler = new piranha::Compiler(&m_rules);
      m_compiler->setFileExtension(".mr");
-
+ 
 -    m_compiler->addSearchPath("../../es/");
      m_compiler->addSearchPath("../es/");
 +    m_compiler->addSearchPath("../../es/");
      m_compiler->addSearchPath("es/");
-
+ 
      m_rules.initialize();
 diff --git a/src/combustion_chamber.cpp b/src/combustion_chamber.cpp
 index d01d56c..c8fac11 100644
@@ -171,10 +171,10 @@ index d01d56c..c8fac11 100644
      assert(m_pressure == nullptr);
 +    assert(m_volume == nullptr);
  }
-
+ 
  void CombustionChamber::initialize(const Parameters &params) {
 @@ -53,9 +55,11 @@ void CombustionChamber::initialize(const Parameters &params) {
-
+ 
      m_pistonSpeed = new double[StateSamples];
      m_pressure = new double[StateSamples];
 +    m_volume = new double[StateSamples];
@@ -183,27 +183,27 @@ index d01d56c..c8fac11 100644
          m_pressure[i] = 0;
 +        m_volume[i] = 0;
      }
-
+ 
      Intake *intake = m_head->getIntake(m_piston->getCylinderIndex());
 @@ -112,9 +116,11 @@ void CombustionChamber::initialize(const Parameters &params) {
  void CombustionChamber::destroy() {
      if (m_pistonSpeed != nullptr) delete[] m_pistonSpeed;
      if (m_pressure != nullptr) delete[] m_pressure;
 +    if (m_volume != nullptr) delete[] m_volume;
-
+ 
      m_pistonSpeed = nullptr;
      m_pressure = nullptr;
 +    m_volume = nullptr;
  }
-
+ 
  double CombustionChamber::getVolume() const {
 @@ -399,6 +405,7 @@ void CombustionChamber::updateCycleStates() {
-
+ 
      m_pistonSpeed[i] = std::abs(pistonSpeed());
      m_pressure[i] = m_system.pressure();
 +    m_volume[i] = getVolume();
  }
-
+ 
  void CombustionChamber::apply(atg_scs::SystemState *system) {
 diff --git a/src/engine_sim_application.cpp b/src/engine_sim_application.cpp
 index c964f46..3c75c89 100644
@@ -215,13 +215,13 @@ index c964f46..3c75c89 100644
  #include <sstream>
 +#include <cmath>
 +#include <utility>
-
+ 
  #if ATG_ENGINE_SIM_DISCORD_ENABLED
  #include "../discord/Discord.h"
 @@ -180,6 +182,8 @@ void EngineSimApplication::initialize() {
      m_audioSource->SetPan(0.0f);
      m_audioSource->SetVolume(1.0f);
-
+ 
 +    m_telemetryServer.start(8765);
 +
  #ifdef ATG_ENGINE_SIM_DISCORD_ENABLED
@@ -229,33 +229,33 @@ index c964f46..3c75c89 100644
      CDiscord::CreateInstance();
 @@ -371,6 +375,7 @@ void EngineSimApplication::run() {
          updateScreenSizeStability();
-
+ 
          processEngineInput();
 +        applyRemoteControls();
-
+ 
          if (m_engine.ProcessKeyDown(ysKey::Code::Insert) &&
              m_engine.GetGameWindow()->IsActive()) {
 @@ -390,6 +395,8 @@ void EngineSimApplication::run() {
              process(m_engine.GetFrameLength());
          }
-
+ 
 +        publishTelemetry();
 +
          m_uiManager.update(m_engine.GetFrameLength());
-
+ 
          renderScene();
 @@ -409,6 +416,7 @@ void EngineSimApplication::run() {
  }
-
+ 
  void EngineSimApplication::destroy() {
 +    m_telemetryServer.stop();
      m_shaderSet.Destroy();
-
+ 
      m_engine.GetDevice()->DestroyGPUBuffer(m_geometryVertexBuffer);
 @@ -421,11 +429,128 @@ void EngineSimApplication::destroy() {
      m_audioBuffer.destroy();
  }
-
+ 
 +void EngineSimApplication::publishTelemetry() {
 +    TelemetryServer::Snapshot snapshot;
 +    snapshot.timestampMs = static_cast<std::uint64_t>(
@@ -391,14 +391,14 @@ index e3642e4..1849d0d 100644
      m_limiterDuration = 0;
 +    m_timingAdvanceOffset = 0;
  }
-
+ 
  IgnitionModule::~IgnitionModule() {
 @@ -108,7 +109,7 @@ void IgnitionModule::resetIgnitionEvents() {
  }
-
+ 
  double IgnitionModule::getTimingAdvance() {
 -    return m_timingCurve->sampleTriangle(-m_crankshaft->m_body.v_theta);
 +    return m_timingCurve->sampleTriangle(-m_crankshaft->m_body.v_theta) + m_timingAdvanceOffset;
  }
-
+ 
  IgnitionModule::SparkPlug *IgnitionModule::getPlug(int i) {
