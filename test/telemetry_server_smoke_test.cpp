@@ -8,7 +8,7 @@
 #include <string>
 
 namespace {
-    std::string get(const char *path) {
+    std::string request(const std::string &method, const char *path, const std::string &body = {}) {
         const SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (client == INVALID_SOCKET) return {};
 
@@ -21,9 +21,10 @@ namespace {
             return {};
         }
 
-        const std::string request = std::string("GET ") + path
-            + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-        if (send(client, request.data(), static_cast<int>(request.size()), 0) <= 0) {
+        const std::string message = method + " " + path
+            + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: "
+            + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        if (send(client, message.data(), static_cast<int>(message.size()), 0) <= 0) {
             closesocket(client);
             return {};
         }
@@ -38,6 +39,9 @@ namespace {
         closesocket(client);
         return response;
     }
+
+    std::string get(const char *path) { return request("GET", path); }
+    std::string post(const char *path, const std::string &body) { return request("POST", path, body); }
 
     bool contains(const std::string &text, const char *expected) {
         if (text.find(expected) != std::string::npos) return true;
@@ -71,6 +75,8 @@ int main() {
     const std::string health = get("/health");
     const std::string telemetry = get("/telemetry");
     const std::string trace = get("/trace?cylinder=0");
+    const std::string control = post("/control", "{\"enabled\":true,\"throttle\":1.5,\"brake_percent\":42,\"rev_limiter_rpm\":7000,\"ignition_advance_offset_deg\":-4.5}");
+    const TelemetryServer::ControlState controlState = server.getControlState();
     server.stop();
 
     const bool passed =
@@ -80,7 +86,15 @@ int main() {
         && contains(telemetry, "\"rpm\":4321.5")
         && contains(telemetry, "\"pressure_bar\":42.5")
         && contains(trace, "\"pressure_bar\":[1,12,42.5,8]")
-        && contains(trace, "\"volume_cc\":[500,180,55,320]");
+        && contains(trace, "\"volume_cc\":[500,180,55,320]")
+        && contains(control, "\"enabled\":true")
+        && contains(control, "\"throttle\":1")
+        && contains(control, "\"brake_percent\":42")
+        && controlState.enabled
+        && controlState.throttle == 1.0
+        && controlState.brakePercent == 42.0
+        && controlState.revLimiterRpm == 7000.0
+        && controlState.ignitionAdvanceOffsetDegrees == -4.5;
 
     if (!passed) return 2;
     std::cout << "Telemetry loopback smoke test passed\n";
