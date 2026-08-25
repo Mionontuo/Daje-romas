@@ -182,6 +182,35 @@ jobs:
           Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'README.md') -Destination (Join-Path $stage 'TELEMETRY_README.md')
           Copy-Item -LiteralPath (Join-Path $env:SOURCE_DIR 'LICENSE') -Destination $stage
 
+      - name: Verify packaged script isolation
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'dist/engine-sim-telemetry'
+          $bin = Join-Path $stage 'bin'
+          $mainScript = Join-Path $stage 'assets/main.mr'
+          $scriptTest = Get-ChildItem -LiteralPath $env:BUILD_DIR -Recurse -File -Filter 'script-compiler-smoke-test.exe' |
+            Where-Object FullName -Match '[\\/]Release[\\/]' |
+            Select-Object -First 1
+          if ($null -eq $scriptTest) { throw 'Packaged script smoke-test executable was not found.' }
+
+          # Reproduce the layout that previously mixed a parent .14 `es`
+          # directory with the packaged stable scripts. The local ../es path
+          # must win even when ../../es contains a conflicting module.
+          $conflictingEs = Join-Path (Split-Path -Parent $stage) 'es'
+          New-Item -ItemType Directory -Force -Path $conflictingEs | Out-Null
+          [IO.File]::WriteAllText((Join-Path $conflictingEs 'engine_sim.mr'), 'this_is_intentionally_invalid')
+
+          Push-Location $bin
+          try {
+            & $scriptTest.FullName $mainScript
+            if ($LASTEXITCODE -ne 0) {
+              $scriptLog = Join-Path $bin 'error_log.log'
+              if (Test-Path -LiteralPath $scriptLog) { Get-Content -LiteralPath $scriptLog }
+              throw 'Packaged engine scripts resolved outside their own runtime.'
+            }
+          }
+          finally { Pop-Location }
+
       - name: Upload downloadable Windows package
         uses: actions/upload-artifact@v4
         with:
