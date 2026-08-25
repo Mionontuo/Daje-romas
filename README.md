@@ -3,8 +3,8 @@
 This small directory contains the complete modified files and a cloud build
 pipeline for the native telemetry fork. It is an overlay for the official
 public `ange-yaghi/engine-sim` source at commit
-`85f7c3b959a908ed5232ede4f1a4ac7eafe6b630` (reported by that source as
-v0.1.12a). It is not a patch for the closed v0.1.14a binary.
+`80a9075bf34f53cd03a59c01883bcb5ec91740f5` (v0.1.11a). It is not a
+patch for the closed v0.1.14a binary.
 
 ## Recommended: build with GitHub Actions
 
@@ -18,9 +18,10 @@ v0.1.12a). It is not a patch for the closed v0.1.14a binary.
 
 The repository upload is about 150 KB. The runner downloads the pinned public
 source and all build dependencies, applies this overlay, compiles with MSVC,
-runs a real HTTP smoke test for `/health`, `/telemetry` and `/trace`, validates
-the dashboard, then assembles a portable package. No Visual Studio installation
-is required on the local PC.
+runs real HTTP smoke tests for `/health`, `/telemetry`, `/trace` and the
+loopback-only `/control` endpoint, validates the dashboard and verifies that
+the portable package cannot import an incompatible parent `es` directory. No
+Visual Studio installation is required on the local PC.
 
 ## Apply
 
@@ -34,7 +35,14 @@ is required on the local PC.
 
 The overlay adds a loopback-only HTTP server, publishes native simulator data
 once per frame (including while paused), records pressure and volume together
-over 256 crank-cycle positions, and links the Windows `ws2_32` library.
+over 256 crank-cycle positions, and links the Windows `ws2_32` library. The
+dashboard can safely control throttle, dynamometer braking/hold, ignition,
+pause, rev limiter and a bounded ignition-advance correction. Remote control
+is opt-in and disabling it releases the dyno and restores the original limiter.
+
+The LIVE chart laboratory retains up to 120 seconds of samples, supports
+configurable X/Y metrics, linear or moving-average interpolation, independent
+left/right axes, derived BMEP, and CSV/PNG export.
 
 For a local build, run `tools/check-realtime-build.ps1` from the runtime bundle
 before attempting the full build. See `REALTIME_TELEMETRY.md` for prerequisites
